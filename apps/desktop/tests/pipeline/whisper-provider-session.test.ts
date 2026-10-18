@@ -74,6 +74,7 @@ beforeEach(() => {
   processingMocks.buildWhisperPrompt.mockReturnValue("test prompt");
 });
 
+import { logger } from "../../src/main/logger";
 import { WhisperProvider } from "../../src/pipeline/providers/transcription/whisper-provider";
 import type { ModelService } from "../../src/services/model-service";
 import { projectionOf, rejectionOf } from "../helpers/error-projection";
@@ -158,9 +159,17 @@ describe("WhisperProvider sessions", () => {
     await vi.waitFor(() =>
       expect(onPreview).toHaveBeenCalledWith("暫定の日本語"),
     );
+    expect(logger.transcription.debug).not.toHaveBeenCalledWith(
+      'Generated initial prompt: "test prompt"',
+    );
     expect(await session.flush({})).toEqual({ text: "確定の日本語" });
+    expect(logger.transcription.debug).toHaveBeenCalledWith(
+      'Generated initial prompt: "test prompt"',
+    );
     expect((decodedCalls()[1]![1][0] as Float32Array).length).toBe(63 * 512);
     expect(onPreview).toHaveBeenCalledTimes(1);
+    expect(decodedCalls()[0]![1][2]).toEqual({ logContent: false });
+    expect(decodedCalls()[1]![1][2]).toBeUndefined();
   });
 
   it.each(["cancel", "flush"] as const)(

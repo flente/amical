@@ -509,6 +509,7 @@ export class WhisperProvider implements TranscriptionEngine {
         context.vocabulary,
         context.aggregatedTranscription,
         context.accessibilityContext,
+        shouldRun === undefined,
       );
 
       const result = await worker.exec<TranscriptionOutput>("transcribeAudio", [
@@ -523,6 +524,8 @@ export class WhisperProvider implements TranscriptionEngine {
           no_timestamps: false,
           format: "detail",
         },
+        // Preview calls carry a validity predicate; keep their content out of logs.
+        ...(shouldRun ? [{ logContent: false }] : []),
       ]);
 
       logger.transcription.debug(
@@ -562,6 +565,7 @@ export class WhisperProvider implements TranscriptionEngine {
     vocabulary?: readonly string[],
     aggregatedTranscription?: string,
     accessibilityContext?: TranscribeContext["accessibilityContext"],
+    logContent = true,
   ): string {
     const prompt = buildWhisperPrompt({
       vocabulary,
@@ -571,7 +575,8 @@ export class WhisperProvider implements TranscriptionEngine {
     });
 
     if (prompt) {
-      logger.transcription.debug(`Generated initial prompt: "${prompt}"`);
+      if (logContent)
+        logger.transcription.debug(`Generated initial prompt: "${prompt}"`);
       return prompt;
     }
 

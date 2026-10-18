@@ -29,6 +29,7 @@ component. It is not a microphone accuracy or latency measurement.
 - Preview events carry a session ID, are ephemeral, and are not added to history
   or formatting input. The router forwards them only while that session is
   recording; the widget clears them on every recording-state/session change.
+  Preview calls suppress segment/prompt content logs and native realtime output.
   Displayed text is bounded and follows the bottom of long Japanese input.
 
 ## Development and verification
@@ -43,6 +44,7 @@ pnpm --filter @amical/whisper-wrapper build
 pnpm --filter @amical/desktop type:check
 pnpm --filter @amical/desktop exec vitest run \
   tests/pipeline/whisper-provider-session.test.ts \
+  tests/pipeline/whisper-worker-privacy.test.ts \
   tests/renderer/floating-button-recording-triggers.test.ts \
   tests/trpc/recording-router.test.ts \
   tests/i18n/locales.test.ts \
@@ -66,14 +68,29 @@ or credentials. Start recording manually only when ready to grant microphone
 access, then check preview revision, pause/silence, stop, dismissal, restart,
 long Japanese speech, and the final pasted result.
 
-Validation on macOS: the targeted suite passed (124 tests), TypeScript passed,
+Validation on macOS: the targeted suite passed (125 tests), TypeScript passed,
 and the Forge main/worker/preload/renderer production bundles built. Native
 Whisper dependencies built with a temporary CMake and the existing Node 24 /
-macOS 15.4 SDK. A full native helper build was blocked by the host Swift package
-manager failing to load a BuildServerProtocol symbol; this is a toolchain issue
-before project source compilation. Forge package finalization consequently fails
-because `packages/native-helpers/swift-helper/bin` is absent. No toolchain
-settings were changed.
+macOS 15.4 SDK. The host Swift package manager cannot load a BuildServerProtocol symbol:
+its executable requests version 6.3 symbols while the installed framework is
+version 6.4. The existing compiler works. For local validation, the same Swift
+sources, generated models, Objective-C module, and embedded audio resources were
+compiled directly using `swiftc` and the existing macOS 15.4 SDK; this produced
+the helper without changing any system toolchain settings. An unsigned arm64
+package was then built successfully with Forge. The standard `build:deps` path
+still needs a coherent host Swift package-manager installation.
+
+With that locally compiled helper already in `bin`, the isolated development
+entry point can skip the broken Swift package-manager build step:
+
+```sh
+AMICAL_E2E_USER_DATA_DIR=/tmp/amical-whisper-preview-profile \
+  pnpm --filter @amical/desktop exec electron-forge start
+```
+
+Use the unpackaged development entry point for manual testing: it uses
+`amical-dev://` rather than registering the installed app's `amical://` scheme.
+The packaged `.app` is a build artifact and was not launched or installed.
 
 Real microphone latency, accuracy, CPU/GPU load, macOS focus behavior, and the
 end-to-end paste flow remain unmeasured. Preview hypotheses may revise words or
