@@ -59,6 +59,34 @@ describe("recordingRouter capture lifecycle", () => {
     expect(next).toHaveBeenCalledTimes(2);
   });
 
+  it("forwards only the active recording preview and unsubscribes", async () => {
+    let snapshot = makeSnapshot("recording", "a", null);
+    let receive!: (event: { sessionId: string; text: string }) => void;
+    const unsubscribe = vi.fn();
+    const caller = recordingRouter.createCaller({
+      services: {
+        recordingLifecycle: { getSnapshot: () => snapshot },
+        transcriptionService: {
+          onPreview: (listener: typeof receive) => {
+            receive = listener;
+            return unsubscribe;
+          },
+        },
+      },
+    } as never);
+    const next = vi.fn();
+    const subscription = (await caller.livePreview()).subscribe({ next });
+    receive({ sessionId: "old", text: "stale" });
+    expect(next).not.toHaveBeenCalled();
+    receive({ sessionId: "a", text: "暫定" });
+    expect(next).toHaveBeenCalledTimes(1);
+    snapshot = makeSnapshot("stopping", "a", null);
+    receive({ sessionId: "a", text: "late" });
+    expect(next).toHaveBeenCalledTimes(1);
+    subscription.unsubscribe();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   const timings = {
     phases: [
       {

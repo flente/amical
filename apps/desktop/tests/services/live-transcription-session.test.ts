@@ -34,6 +34,20 @@ const materialized = (
 const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 
 describe("LiveTranscriptionSession — characterization", () => {
+  it.each([true, false])(
+    "stops previews when admission closes (already attached: %s)",
+    (attached) => {
+      const session = new LiveTranscriptionSession("s1");
+      const provider = materialized();
+      const stopPreview = vi.fn();
+      provider.providerSession.stopPreview = stopPreview;
+      if (attached) session.attach(provider);
+      session.closeChunkAdmission();
+      if (!attached) session.attach(provider);
+      expect(stopPreview).toHaveBeenCalledOnce();
+      expect(session.canCompleteAdmittedWork()).toBe(true);
+    },
+  );
   it("dual settlement: the returned promise rejects, the drain ledger never rejects", async () => {
     const session = new LiveTranscriptionSession("s1");
     const boom = new Error("chunk failed");

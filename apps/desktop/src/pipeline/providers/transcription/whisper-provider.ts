@@ -29,6 +29,8 @@ const MIN_AUDIO_DURATION_MS = 500;
 const MAX_SILENCE_DURATION_MS = 3000;
 const SAMPLE_RATE = 16000;
 const SPEECH_PROBABILITY_THRESHOLD = 0.2;
+const PREVIEW_INTERVAL_MS = 2000;
+const PREVIEW_WINDOW_FRAMES = 375; // twelve seconds at 32ms per frame
 
 type WhisperSessionRuntime = {
   assertAvailable(): void;
@@ -37,6 +39,7 @@ type WhisperSessionRuntime = {
     modelPath: string,
     audio: Float32Array,
     context: TranscribeContext,
+    shouldRun?: () => boolean,
   ): Promise<TranscriptionOutput>;
 };
 
@@ -48,11 +51,17 @@ class WhisperProviderSession implements TranscriptionProviderSession {
   private currentSilenceFrameCount = 0;
   private initializationPromise: Promise<string> | null = null;
   private cancelled = false;
+  private previewsStopped = false;
+  private previewBusy = false;
+  private previewEpoch = 0;
+  private previewSamples = 0;
+  private nextPreviewAt = 0;
 
   constructor(
     readonly sessionId: string,
     private readonly modelPath: Promise<string>,
     private readonly runtime: WhisperSessionRuntime,
+    private readonly onPreview?: (text: string) => void,
   ) {}
 
   /**
@@ -88,6 +97,7 @@ class WhisperProviderSession implements TranscriptionProviderSession {
     }
 
     if (!this.shouldTranscribe()) {
+      if (isSpeech) this.maybePreview(context, modelPath);
       return { text: "" };
     }
 
@@ -101,6 +111,7 @@ class WhisperProviderSession implements TranscriptionProviderSession {
     context: TranscribeContext,
     signal?: AbortSignal,
   ): Promise<TranscriptionOutput> {
+    this.stopPreview();
     if (this.cancelled || signal?.aborted || this.frameBuffer.length === 0) {
       return { text: "" };
     }
@@ -123,6 +134,89 @@ class WhisperProviderSession implements TranscriptionProviderSession {
   cancel(): void {
     this.cancelled = true;
     this.resetBuffers();
+  }
+
+  stopPreview(): void {
+    this.previewsStopped = true;
+    this.previewEpoch++;
+  }
+
+  /** Best effort, bounded and non-blocking: capture/final accumulation never
+   * waits for a preview. The engine mutex serializes native decodes. No queue
+   * of preview jobs builds up on a slow model, and final batches invalidate
+   * an in-flight hypothesis before detaching their audio. */
+  private maybePreview(context: TranscribeContext, modelPath: string): void {
+    if (
+      !this.onPreview ||
+      this.previewBusy ||
+      this.previewsStopped ||
+      this.cancelled
+    )
+      return;
+    const samples = this.frameBuffer.reduce(
+      (sum, frame) => sum + frame.length,
+      0,
+    );
+    if (
+      samples - this.previewSamples <
+        SAMPLE_RATE * (PREVIEW_INTERVAL_MS / 1000) ||
+      Date.now() < this.nextPreviewAt
+    )
+      return;
+    this.previewSamples = samples;
+    const epoch = this.previewEpoch;
+    // VAD frames are 32ms; keep at most twelve seconds of recent context.
+    const frames = this.frameBuffer.slice(-PREVIEW_WINDOW_FRAMES);
+    const probs = this.frameBufferSpeechProbabilities.slice(
+      -PREVIEW_WINDOW_FRAMES,
+    );
+    const audio = new Float32Array(
+      frames.reduce((sum, frame) => sum + frame.length, 0),
+    );
+    let offset = 0;
+    for (const frame of frames) {
+      audio.set(frame, offset);
+      offset += frame.length;
+    }
+    const filtered = extractSpeechFromVad(audio, probs).audio;
+    if (!filtered.length) return;
+    this.previewBusy = true;
+    void this.runtime
+      .transcribeAudio(
+        modelPath,
+        filtered,
+        context,
+        () =>
+          !this.cancelled &&
+          !this.previewsStopped &&
+          epoch === this.previewEpoch,
+      )
+      .then((result) => {
+        if (
+          !this.cancelled &&
+          !this.previewsStopped &&
+          epoch === this.previewEpoch
+        ) {
+          this.emitPreview(result.text);
+        }
+      })
+      .catch(() => {
+        // A speculative decode failure must not fail the real transcription.
+        // Disable speculation for this session; the real decode still runs.
+        this.previewsStopped = true;
+      })
+      .finally(() => {
+        this.previewBusy = false;
+        this.nextPreviewAt = Date.now() + PREVIEW_INTERVAL_MS;
+      });
+  }
+
+  private emitPreview(text: string): void {
+    try {
+      this.onPreview?.(text.trim());
+    } catch {
+      /* Display observers cannot fail transcription. */
+    }
   }
 
   private ensureInitialized(): Promise<string> {
@@ -183,6 +277,8 @@ class WhisperProviderSession implements TranscriptionProviderSession {
         aggregatedAudio,
         context,
       );
+      if (!this.cancelled && !this.previewsStopped)
+        this.emitPreview(result.text);
       return this.cancelled ? { text: "" } : result;
     } catch (error) {
       if (this.cancelled) {
@@ -200,6 +296,8 @@ class WhisperProviderSession implements TranscriptionProviderSession {
   }
 
   private resetBuffers(): void {
+    this.previewEpoch++;
+    this.previewSamples = 0;
     this.frameBuffer = [];
     this.frameBufferSpeechProbabilities = [];
     this.currentSilenceFrameCount = 0;
@@ -280,12 +378,17 @@ export class WhisperProvider implements TranscriptionEngine {
     // selection too. The session still observes the rejection on first use.
     void modelPath.catch(() => undefined);
 
-    return new WhisperProviderSession(options.sessionId, modelPath, {
-      assertAvailable: () => this.assertNotDisposed(),
-      initialize: (path) => this.initializeModel(path),
-      transcribeAudio: (path, audio, context) =>
-        this.transcribeAudio(path, audio, context),
-    });
+    return new WhisperProviderSession(
+      options.sessionId,
+      modelPath,
+      {
+        assertAvailable: () => this.assertNotDisposed(),
+        initialize: (path) => this.initializeModel(path),
+        transcribeAudio: (path, audio, context, shouldRun) =>
+          this.transcribeAudio(path, audio, context, shouldRun),
+      },
+      options.onPreview,
+    );
   }
 
   /**
@@ -395,10 +498,13 @@ export class WhisperProvider implements TranscriptionEngine {
     modelPath: string,
     aggregatedAudio: Float32Array,
     context: TranscribeContext,
+    shouldRun?: () => boolean,
   ): Promise<TranscriptionOutput> {
     return this.resourceMutex.runExclusive(async () => {
+      if (shouldRun && !shouldRun()) return { text: "" };
       this.assertNotDisposed();
       const worker = await this.initializeWhisperResource(modelPath);
+      if (shouldRun && !shouldRun()) return { text: "" };
       const initialPrompt = this.generateInitialPrompt(
         context.vocabulary,
         context.aggregatedTranscription,

@@ -146,6 +146,20 @@ export type ResolvedStreamingSession = {
  * Service for audio transcription and optional formatting
  */
 export class TranscriptionService {
+  private readonly previewListeners = new Set<
+    (preview: { sessionId: string; text: string }) => void
+  >();
+
+  /** Ephemeral display-only results; not logged, persisted, or formatted. */
+  onPreview(
+    listener: (preview: { sessionId: string; text: string }) => void,
+  ): () => void {
+    this.previewListeners.add(listener);
+    return () => {
+      this.previewListeners.delete(listener);
+    };
+  }
+
   private whisperEngine: WhisperProvider;
   private cloudEngine: AmicalCloudProvider;
   private activeLiveSession: LiveTranscriptionSession | null = null;
@@ -804,6 +818,20 @@ export class TranscriptionService {
                   engine.openSession({
                     sessionId,
                     modelId: selectedModelId,
+                    onPreview: (text) => {
+                      if (
+                        service.activeLiveSession !== liveSession ||
+                        !liveSession.canCompleteAdmittedWork()
+                      )
+                        return;
+                      for (const listener of service.previewListeners) {
+                        try {
+                          listener({ sessionId, text: text.slice(-1000) });
+                        } catch {
+                          /* UI listeners cannot fail capture. */
+                        }
+                      }
+                    },
                     onTerminalFailure: (error) =>
                       liveSession.reportTerminalFailure(error),
                   }),
@@ -1224,6 +1252,7 @@ export class TranscriptionService {
    * Cleanup method
    */
   async dispose(): Promise<void> {
+    this.previewListeners.clear();
     const liveSession = this.activeLiveSession;
     if (liveSession) {
       liveSession.requestAbort();

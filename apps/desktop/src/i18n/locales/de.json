@@ -1,4 +1,7 @@
 {
+  "livePreview": {
+    "label": "Live-Vorschau · vorläufig · letzte Spracheingabe"
+  },
   "app": {
     "loading": "Amical wird geladen..."
   },
