@@ -92,6 +92,7 @@ const methods = {
       no_timestamps: boolean;
       format?: string;
     },
+    logging: { logContent?: boolean } = {},
   ): Promise<{ text: string; detectedLanguage?: string }> {
     if (!whisperInstance) {
       throw new Error("Whisper instance is not initialized");
@@ -109,7 +110,14 @@ const methods = {
 
     const { result } = await whisperInstance.transcribe(
       aggregatedAudio,
-      options,
+      logging.logContent === false
+        ? {
+            ...options,
+            print_realtime: false,
+            print_timestamps: false,
+            print_progress: false,
+          }
+        : options,
     );
     const transcription = await result;
 
@@ -120,11 +128,12 @@ const methods = {
       noSpeechProb?: number;
     }>;
 
-    for (const seg of segments) {
-      logger.transcription.debug(
-        `Segment [noSpeechProb=${seg.noSpeechProb?.toFixed(3) ?? "N/A"}]: "${seg.text.trim().slice(0, 80)}"`,
-      );
-    }
+    if (logging.logContent !== false)
+      for (const seg of segments) {
+        logger.transcription.debug(
+          `Segment [noSpeechProb=${seg.noSpeechProb?.toFixed(3) ?? "N/A"}]: "${seg.text.trim().slice(0, 80)}"`,
+        );
+      }
 
     const kept = segments.filter((segment) => !shouldDropSegment(segment));
     const droppedCount = segments.length - kept.length;

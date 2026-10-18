@@ -82,6 +82,19 @@ export const FloatingButton: React.FC<FloatingButtonProps> = ({
 }) => {
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
+  const [preview, setPreview] = useState<{
+    sessionId: string;
+    text: string;
+  } | null>(null);
+  api.recording.livePreview.useSubscription(undefined, { onData: setPreview });
+  useEffect(() => {
+    setPreview(null);
+  }, [recordingStatus.sessionId, recordingStatus.state]);
+  const previewTextRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = previewTextRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [preview]);
   const leaveTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for debounce timeout
   const clickTimeRef = useRef<number | null>(null); // Track when user clicked
 
@@ -265,23 +278,44 @@ export const FloatingButton: React.FC<FloatingButtonProps> = ({
   };
 
   return (
-    <div
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-      className={`
+    <div className="pointer-events-none flex flex-col items-center">
+      {recordingStatus.state === "recording" &&
+        preview?.sessionId === recordingStatus.sessionId &&
+        preview.text && (
+          <div
+            role="status"
+            aria-live="off"
+            className="pointer-events-none mb-3 w-[360px] max-w-[90vw] rounded-2xl bg-black/85 px-4 py-3 text-white shadow-lg"
+          >
+            <div className="mb-1 text-[10px] text-white/60">
+              {t("livePreview.label")}
+            </div>
+            <div
+              ref={previewTextRef}
+              className="max-h-24 overflow-hidden text-sm leading-relaxed break-words whitespace-pre-wrap"
+            >
+              {preview.text}
+            </div>
+          </div>
+        )}
+      <div
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        className={`
         transition-all duration-200 ease-in-out
         ${sizeClass}
         bg-black/70 rounded-[24px] backdrop-blur-md ring-[1px] ring-black/60 shadow-[0px_0px_15px_0px_rgba(0,0,0,0.40)]
         before:content-[''] before:absolute before:inset-[1px] before:rounded-[23px] before:outline before:outline-white/15 before:pointer-events-none
         mb-2 cursor-pointer select-none
       `}
-      style={{ pointerEvents: "auto" }}
-    >
-      {isWidgetActive && (
-        <div className="flex gap-[2px] h-full w-full justify-between">
-          {renderWidgetContent()}
-        </div>
-      )}
+        style={{ pointerEvents: "auto" }}
+      >
+        {isWidgetActive && (
+          <div className="flex gap-[2px] h-full w-full justify-between">
+            {renderWidgetContent()}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

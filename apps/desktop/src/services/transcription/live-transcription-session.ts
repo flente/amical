@@ -198,6 +198,7 @@ export class LiveTranscriptionSession {
   closeChunkAdmission(): void {
     if (this.phase === "open") {
       this.phase = "finishing";
+      this.materialized?.providerSession.stopPreview?.();
     }
   }
 
@@ -244,6 +245,7 @@ export class LiveTranscriptionSession {
     applyUpdate(session, this.pendingUpdate);
     this.pendingUpdate = {};
     this.materialized = session;
+    if (this.phase === "finishing") session.providerSession.stopPreview?.();
     return true;
   }
 

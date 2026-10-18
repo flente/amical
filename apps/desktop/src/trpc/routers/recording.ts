@@ -168,6 +168,21 @@ export const recordingRouter = createRouter({
     });
   }),
 
+  livePreview: procedure.subscription(({ ctx }) => {
+    return observable<{ sessionId: string; text: string }>((emit) => {
+      const lifecycle = requireLifecycle(ctx);
+      return ctx.services.transcriptionService?.onPreview((preview) => {
+        const snapshot = lifecycle.getSnapshot();
+        if (
+          snapshot.sessionId === preview.sessionId &&
+          snapshot.projection.publicState === "recording"
+        ) {
+          emit.next(preview);
+        }
+      });
+    });
+  }),
+
   systemResume: procedure.subscription(() => {
     return observable<null>((emit) => {
       const onResume = () => emit.next(null);

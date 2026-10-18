@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { RecordingStatus } from "@/hooks/useRecording";
 
@@ -13,8 +13,22 @@ vi.mock("@/hooks/useFeatureFlag", () => ({
   useFeatureFlag: () => ({ enabled: false }),
 }));
 
+const previewSubscription = vi.hoisted(() => ({
+  onData: vi.fn<(preview: { sessionId: string; text: string }) => void>(),
+}));
+
 vi.mock("@/trpc/react", () => ({
   api: {
+    recording: {
+      livePreview: {
+        useSubscription: (
+          _input: unknown,
+          options: typeof previewSubscription,
+        ) => {
+          previewSubscription.onData = options.onData;
+        },
+      },
+    },
     widget: {
       openNotesWindow: {
         useMutation: () => ({ mutateAsync: vi.fn() }),
@@ -34,6 +48,44 @@ vi.mock("react-i18next", () => ({
 import { FloatingButton } from "@/renderer/widget/pages/widget/components/FloatingButton";
 
 describe("FloatingButton recording triggers", () => {
+  it("shows only the current recording preview and clears it across stop/restart", () => {
+    const props = {
+      recordingStatus: {
+        sessionId: "a",
+        state: "recording",
+        mode: "hands-free",
+        isDraft: false,
+        stopKind: "none",
+        stopOrigin: "none",
+      } as RecordingStatus,
+      audioLevelRef: { current: 0 },
+      startRecording: vi.fn(),
+      stopRecording: vi.fn(),
+      dismissRecording: vi.fn(),
+    };
+    const view = render(React.createElement(FloatingButton, props));
+    act(() =>
+      previewSubscription.onData({ sessionId: "a", text: "日本語の暫定結果" }),
+    );
+    expect(screen.getByRole("status").textContent).toContain(
+      "日本語の暫定結果",
+    );
+    view.rerender(
+      React.createElement(FloatingButton, {
+        ...props,
+        recordingStatus: { ...props.recordingStatus, state: "stopping" },
+      }),
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    view.rerender(
+      React.createElement(FloatingButton, {
+        ...props,
+        recordingStatus: { ...props.recordingStatus, sessionId: "b" },
+      }),
+    );
+    act(() => previewSubscription.onData({ sessionId: "a", text: "stale" }));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
   it.each([
     {
       state: "recording",

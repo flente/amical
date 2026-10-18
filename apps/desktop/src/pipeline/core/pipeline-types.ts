@@ -37,6 +37,8 @@ export interface OpenTranscriptionSessionOptions {
    * session on that model even if the application selection changes later.
    */
   modelId?: string | null;
+  /** Display-only local preview; never accumulated into the final transcript. */
+  onPreview?: (text: string) => void;
   /** Reports an out-of-band failure after session-local recovery is exhausted. */
   onTerminalFailure?: (error: Error) => void;
 }
@@ -56,6 +58,8 @@ export interface TranscriptionProviderSession {
     context: TranscribeContext,
     signal?: AbortSignal,
   ): Promise<TranscriptionOutput>;
+  /** Stop speculative decoding while already-admitted final audio drains. */
+  stopPreview?(): void;
   /** Push a newer context snapshot to an already-open streaming transport. */
   updateSessionContext?(context: TranscribeContext): Promise<void>;
   /**

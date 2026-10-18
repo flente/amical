@@ -1,4 +1,5 @@
 {
+  "livePreview": { "label": "ライブプレビュー · 暫定 · 最近の発話" },
   "app": {
     "loading": "Amicalを読み込み中..."
   },

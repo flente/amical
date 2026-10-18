@@ -74,6 +74,7 @@ beforeEach(() => {
   processingMocks.buildWhisperPrompt.mockReturnValue("test prompt");
 });
 
+import { logger } from "../../src/main/logger";
 import { WhisperProvider } from "../../src/pipeline/providers/transcription/whisper-provider";
 import type { ModelService } from "../../src/services/model-service";
 import { projectionOf, rejectionOf } from "../helpers/error-projection";
@@ -125,6 +126,137 @@ describe("WhisperProvider sessions", () => {
 
     return modelBySample;
   };
+
+  const feedFrames = async (
+    session: ReturnType<WhisperProvider["openSession"]>,
+    count: number,
+    probability = 1,
+  ) => {
+    for (let i = 0; i < count; i++)
+      await session.transcribe({
+        audioData: new Float32Array(512).fill(0.1),
+        speechProbability: probability,
+        context: {},
+      });
+  };
+  const decodedCalls = () =>
+    workerMocks.exec.mock.calls.filter(
+      ([method]) => method === "transcribeAudio",
+    );
+
+  it("previews Japanese speech without consuming or committing the final audio", async () => {
+    const { provider } = createProvider();
+    const onPreview = vi.fn();
+    workerMocks.exec.mockImplementation(async (method) =>
+      method === "transcribeAudio"
+        ? {
+            text: decodedCalls().length === 1 ? "暫定の日本語" : "確定の日本語",
+          }
+        : undefined,
+    );
+    const session = provider.openSession({ sessionId: "preview", onPreview });
+    await feedFrames(session, 63);
+    await vi.waitFor(() =>
+      expect(onPreview).toHaveBeenCalledWith("暫定の日本語"),
+    );
+    expect(logger.transcription.debug).not.toHaveBeenCalledWith(
+      'Generated initial prompt: "test prompt"',
+    );
+    expect(await session.flush({})).toEqual({ text: "確定の日本語" });
+    expect(logger.transcription.debug).toHaveBeenCalledWith(
+      'Generated initial prompt: "test prompt"',
+    );
+    expect((decodedCalls()[1]![1][0] as Float32Array).length).toBe(63 * 512);
+    expect(onPreview).toHaveBeenCalledTimes(1);
+    expect(decodedCalls()[0]![1][2]).toEqual({ logContent: false });
+    expect(decodedCalls()[1]![1][2]).toBeUndefined();
+  });
+
+  it.each(["cancel", "flush"] as const)(
+    "discards an in-flight preview after %s",
+    async (ending) => {
+      const { provider } = createProvider();
+      const onPreview = vi.fn();
+      let release!: (value: unknown) => void;
+      workerMocks.exec.mockImplementation(async (method) => {
+        if (method !== "transcribeAudio") return;
+        if (decodedCalls().length === 1)
+          return new Promise((resolve) => {
+            release = resolve;
+          });
+        return { text: "final" };
+      });
+      const session = provider.openSession({ sessionId: "old", onPreview });
+      await feedFrames(session, 63);
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await feedFrames(session, 100);
+      expect(decodedCalls()).toHaveLength(1);
+      const finishing =
+        ending === "flush"
+          ? session.flush({})
+          : (session.cancel(), Promise.resolve(null));
+      release({ text: "stale" });
+      await finishing;
+      await vi.waitFor(() => expect(onPreview).not.toHaveBeenCalled());
+      await session.transcribe({
+        audioData: new Float32Array(512),
+        context: {},
+      });
+      expect(onPreview).not.toHaveBeenCalled();
+    },
+  );
+
+  it("bounds a rolling window and preserves the complete long input for finalization", async () => {
+    const { provider } = createProvider();
+    const onPreview = vi.fn();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10000);
+    workerMocks.exec.mockImplementation(async (method) =>
+      method === "transcribeAudio" ? { text: "長い日本語の発話" } : undefined,
+    );
+    try {
+      const session = provider.openSession({ sessionId: "long", onPreview });
+      await feedFrames(session, 63);
+      await vi.waitFor(() => expect(onPreview).toHaveBeenCalledTimes(1));
+      await feedFrames(session, 400);
+      expect(decodedCalls()).toHaveLength(1);
+      clock.mockReturnValue(13000);
+      await feedFrames(session, 1);
+      await vi.waitFor(() => expect(onPreview).toHaveBeenCalledTimes(2));
+      expect((decodedCalls()[1]![1][0] as Float32Array).length).toBe(
+        12 * 16000,
+      );
+      await session.flush({});
+      expect((decodedCalls()[2]![1][0] as Float32Array).length).toBe(464 * 512);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("degrades a failed preview without losing the final transcript", async () => {
+    const { provider } = createProvider();
+    const onPreview = vi.fn();
+    workerMocks.exec.mockImplementation(async (method) => {
+      if (method !== "transcribeAudio") return;
+      if (decodedCalls().length === 1) throw new Error("speculation failed");
+      return { text: "final unaffected" };
+    });
+    const session = provider.openSession({ sessionId: "failure", onPreview });
+    await feedFrames(session, 63);
+    await vi.waitFor(() => expect(decodedCalls()).toHaveLength(1));
+    expect(await session.flush({})).toEqual({ text: "final unaffected" });
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
+  it("does not decode a preview for silence", async () => {
+    const { provider } = createProvider();
+    const session = provider.openSession({
+      sessionId: "silent",
+      onPreview: vi.fn(),
+    });
+    await feedFrames(session, 63, 0);
+    expect(decodedCalls()).toHaveLength(0);
+    session.cancel();
+  });
 
   it("isolates buffered audio and cancellation between sessions", async () => {
     const { provider } = createProvider();
